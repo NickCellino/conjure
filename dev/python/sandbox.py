@@ -5,7 +5,8 @@ add(4, 29)
 
 4 + 9
 
-"hello"
+for i in range(5):
+    print('hello')
 
 print("hello world")
 

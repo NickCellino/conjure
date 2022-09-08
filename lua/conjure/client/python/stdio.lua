@@ -24,7 +24,7 @@ _2amodule_locals_2a["str"] = str
 _2amodule_locals_2a["text"] = text
 _2amodule_locals_2a["ts"] = ts
 _2amodule_locals_2a["_"] = _
-config.merge({client = {python = {stdio = {mapping = {start = "cs", stop = "cS", interrupt = "ei"}, command = "python3 -iq", prompt_pattern = ">>> "}}}})
+config.merge({client = {python = {stdio = {mapping = {start = "cs", stop = "cS", interrupt = "ei"}, command = "ipython -i --colors=NoColor", prompt_pattern = "In%s%[%d+%]:%s"}}}})
 local cfg = config["get-in-fn"]({"client", "python", "stdio"})
 do end (_2amodule_locals_2a)["cfg"] = cfg
 local state
@@ -37,6 +37,8 @@ local buf_suffix = ".py"
 _2amodule_2a["buf-suffix"] = buf_suffix
 local comment_prefix = "# "
 _2amodule_2a["comment-prefix"] = comment_prefix
+local expression_output_pattern = "^Out%[%d+%]:%s"
+_2amodule_2a["expression-output-pattern"] = expression_output_pattern
 local function with_repl_or_warn(f, opts)
   local repl = state("repl")
   if repl then
@@ -64,47 +66,63 @@ local function format_msg(msg)
   return a.filter(_4_, str.split(msg, "\n"))
 end
 _2amodule_2a["format-msg"] = format_msg
-local function is_dots_3f(s)
-  return (string.sub(s, 1, 3) == "...")
+local function is_expression_output_3f(m)
+  if m:find(expression_output_pattern) then
+    return true
+  else
+    return false
+  end
 end
-_2amodule_locals_2a["is-dots?"] = is_dots_3f
+_2amodule_locals_2a["is-expression-output?"] = is_expression_output_3f
+local function remove_secondary_prompt(s)
+  local function _7_()
+    local _6_ = s:gsub("%.%.%.:", "")
+    return _6_
+  end
+  return str.trim(_7_())
+end
+_2amodule_locals_2a["remove-secondary-prompt"] = remove_secondary_prompt
 local function get_console_output_msgs(msgs)
-  local function _5_(_241)
+  local function _8_(_241)
     return (comment_prefix .. "(out) " .. _241)
   end
-  local function _6_(_241)
-    return not is_dots_3f(_241)
+  local function _9_(_241)
+    return not is_expression_output_3f(_241)
   end
-  return a.map(_5_, a.filter(_6_, a.butlast(msgs)))
+  local function _10_(_241)
+    return not a["empty?"](_241)
+  end
+  return a.map(_8_, a.filter(_9_, a.filter(_10_, a.map(remove_secondary_prompt, msgs))))
 end
 _2amodule_locals_2a["get-console-output-msgs"] = get_console_output_msgs
-local function get_result(msgs)
-  local result = a.last(msgs)
-  if (a["nil?"](result) or is_dots_3f(result)) then
-    return nil
-  else
-    return result
-  end
+local function extract_expression_output(m)
+  local _11_ = m:gsub(expression_output_pattern, "")
+  return _11_
 end
-_2amodule_locals_2a["get-result"] = get_result
+_2amodule_locals_2a["extract-expression-output"] = extract_expression_output
+local function get_expression_output(msgs)
+  local results = a.filter(is_expression_output_3f, msgs)
+  return a.map(extract_expression_output, results)
+end
+_2amodule_locals_2a["get-expression-output"] = get_expression_output
 local function log_repl_output(msgs)
   local msgs0 = format_msg(unbatch(msgs))
-  local console_output_msgs = get_console_output_msgs(msgs0)
-  local cmd_result = get_result(msgs0)
-  if not a["empty?"](console_output_msgs) then
-    log.append(console_output_msgs)
+  local console_outputs = get_console_output_msgs(msgs0)
+  local expression_outputs = get_expression_output(msgs0)
+  if not a["empty?"](console_outputs) then
+    log.append(console_outputs)
   else
   end
-  if cmd_result then
-    return log.append({cmd_result})
+  if not a["empty?"](expression_outputs) then
+    return log.append(expression_outputs)
   else
     return nil
   end
 end
 _2amodule_locals_2a["log-repl-output"] = log_repl_output
 local function eval_str(opts)
-  local function _10_(repl)
-    local function _11_(msgs)
+  local function _14_(repl)
+    local function _15_(msgs)
       log_repl_output(msgs)
       if opts["on-result"] then
         return opts["on-result"](str.join(" ", msgs))
@@ -112,9 +130,9 @@ local function eval_str(opts)
         return nil
       end
     end
-    return repl.send(prep_code(opts.code), _11_, {["batch?"] = true})
+    return repl.send(prep_code(opts.code), _15_, {["batch?"] = true})
   end
-  return with_repl_or_warn(_10_)
+  return with_repl_or_warn(_14_)
 end
 _2amodule_2a["eval-str"] = eval_str
 local function eval_file(opts)
@@ -141,22 +159,17 @@ local function stop()
   end
 end
 _2amodule_2a["stop"] = stop
-local update_python_displayhook = ("import sys\n" .. "def format_output(val):\n" .. "    print(repr(val))\n\n" .. "sys.displayhook = format_output\n")
-do end (_2amodule_2a)["update-python-displayhook"] = update_python_displayhook
 local function start()
   if state("repl") then
     return log.append({(comment_prefix .. "Can't start, REPL is already running."), (comment_prefix .. "Stop the REPL with " .. config["get-in"]({"mapping", "prefix"}) .. cfg({"mapping", "stop"}))}, {["break?"] = true})
   else
-    local function _15_()
-      local function _16_(repl)
-        return repl.send(prep_code(update_python_displayhook), log_repl_output, {["batch?"] = true})
-      end
-      return display_repl_status("started", with_repl_or_warn(_16_))
+    local function _19_()
+      return display_repl_status("started")
     end
-    local function _17_(err)
+    local function _20_(err)
       return display_repl_status(err)
     end
-    local function _18_(code, signal)
+    local function _21_(code, signal)
       if (("number" == type(code)) and (code > 0)) then
         log.append({(comment_prefix .. "process exited with code " .. code)})
       else
@@ -167,10 +180,10 @@ local function start()
       end
       return stop()
     end
-    local function _21_(msg)
+    local function _24_(msg)
       return log.dbg(format_msg(unbatch({msg})), {["join-first?"] = true})
     end
-    return a.assoc(state(), "repl", stdio.start({["prompt-pattern"] = cfg({"prompt_pattern"}), cmd = cfg({"command"}), ["on-success"] = _15_, ["on-error"] = _17_, ["on-exit"] = _18_, ["on-stray-output"] = _21_}))
+    return a.assoc(state(), "repl", stdio.start({["prompt-pattern"] = cfg({"prompt_pattern"}), cmd = cfg({"command"}), ["on-success"] = _19_, ["on-error"] = _20_, ["on-exit"] = _21_, ["on-stray-output"] = _24_}))
   end
 end
 _2amodule_2a["start"] = start
@@ -183,11 +196,11 @@ local function on_exit()
 end
 _2amodule_2a["on-exit"] = on_exit
 local function interrupt()
-  local function _23_(repl)
+  local function _26_(repl)
     local uv = vim.loop
     return uv.kill(repl.pid, uv.constants.SIGINT)
   end
-  return with_repl_or_warn(_23_)
+  return with_repl_or_warn(_26_)
 end
 _2amodule_2a["interrupt"] = interrupt
 local function on_filetype()

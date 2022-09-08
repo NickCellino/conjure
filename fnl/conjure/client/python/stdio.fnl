@@ -19,8 +19,8 @@
      {:mapping {:start "cs"
                 :stop "cS"
                 :interrupt "ei"}
-      :command "python3 -iq"
-      :prompt_pattern ">>> "}}}})
+      :command "ipython -i --colors=NoColor"
+      :prompt_pattern "In%s%[%d+%]:%s"}}}})
 
 (def- cfg (config.get-in-fn [:client :python :stdio]))
 
@@ -28,6 +28,12 @@
 
 (def buf-suffix ".py")
 (def comment-prefix "# ")
+
+; The output of an expression gets printed like so in ipython:
+; Out[<##>]: <output>
+; where <##> is basically some auto-incrementing id ipython assigns
+; to each input/output pair
+(def expression-output-pattern "^Out%[%d+%]:%s")
 
 (defn- with-repl-or-warn [f opts]
   (let [repl (state :repl)]
@@ -55,38 +61,42 @@
   (->> (str.split msg "\n")
        (a.filter #(~= "" $1))))
 
-; If, after pressing newline, the python interpreter expects more
-; input from you (as is the case after the first line of an if branch or for loop)
-; the python interpreter will output "..." to show that it is waiting for more input.
-; We want to detect these lines and ignore them in many cases.
-;
-; Note: This is check will yield some false positives. For example if a user evaluates
-;   print("... <-- check out those dots")
-; the output will be flagged as one of these special "dots" lines. This should probably
-; be smarter...
-(defn- is-dots? [s]
-  (= (string.sub s 1 3) "..."))
+(defn- is-expression-output? [m]
+  (if (m:find expression-output-pattern)
+    true
+    false))
+
+; This will remove any "secondary prompts" that the REPL outputs.
+; These look like this "...:" and get printed by the REPL when you start
+; a statement whose next line is expected to be indented (def statement, for loop, etc.)
+; They are also surrounded by whitespace on the left (4 spaces) and on the right (amount
+; of spaces depends on how nested your current statement is).
+(defn- remove-secondary-prompt [s]
+  (str.trim (pick-values 1 (s:gsub "%.%.%.:" ""))))
 
 (defn- get-console-output-msgs [msgs]
-  (->> (a.butlast msgs)
-       (a.filter #(not (is-dots? $1)))
+  (->> msgs
+       (a.map remove-secondary-prompt)
+       (a.filter #(not (a.empty? $)))
+       (a.filter #(not (is-expression-output? $)))
        (a.map #(.. comment-prefix "(out) " $1))))
 
-(defn- get-result [msgs]
-  (let [result (a.last msgs)]
-    (if
-      (or (a.nil? result) (is-dots? result))
-      nil
-      result)))
+(defn- extract-expression-output [m]
+  (pick-values 1 (m:gsub expression-output-pattern "")))
+
+; There should typically only be 1 result, but we do not make that assumption
+(defn- get-expression-output [msgs]
+  (let [results (a.filter is-expression-output? msgs)]
+    (a.map extract-expression-output results)))
 
 (defn- log-repl-output [msgs]
   (let [msgs (-> msgs unbatch format-msg)
-        console-output-msgs (get-console-output-msgs msgs)
-        cmd-result (get-result msgs)]
-    (when (not (a.empty? console-output-msgs))
-      (log.append console-output-msgs))
-    (when cmd-result
-      (log.append [cmd-result]))))
+        console-outputs (get-console-output-msgs msgs)
+        expression-outputs (get-expression-output msgs)]
+    (when (not (a.empty? console-outputs))
+      (log.append console-outputs))
+    (when (not (a.empty? expression-outputs))
+      (log.append expression-outputs))))
 
 (defn eval-str [opts]
   (with-repl-or-warn
@@ -116,20 +126,6 @@
       (display-repl-status :stopped)
       (a.assoc (state) :repl nil))))
 
-; By default, there is no way for us to tell the difference between
-; normal stdout log messages and the result of the expression we evaluated.
-; This is because if an expression results in the literal value None, the python
-; interpreter will not print out anything.
-
-; Replacing this hook ensures that the last line in the output after
-; sending a command is the result of the command.
-; Relevant docs: https://docs.python.org/3/library/sys.html#sys.displayhook
-(def update-python-displayhook
-  (.. "import sys\n"
-      "def format_output(val):\n"
-      "    print(repr(val))\n\n"
-      "sys.displayhook = format_output\n"))
-
 (defn start []
   (if (state :repl)
     (log.append [(.. comment-prefix "Can't start, REPL is already running.")
@@ -145,13 +141,7 @@
 
          :on-success
          (fn []
-           (display-repl-status :started
-            (with-repl-or-warn
-             (fn [repl]
-               (repl.send
-                 (prep-code update-python-displayhook)
-                 log-repl-output
-                 {:batch? true})))))
+           (display-repl-status :started))
 
          :on-error
          (fn [err]
